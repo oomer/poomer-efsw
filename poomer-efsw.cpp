@@ -4,11 +4,14 @@
 #include <filesystem>
 #include <string>
 #include <atomic>
+#include <signal.h>
 
-#include "../bella_engine_sdk/src/bella_sdk/bella_engine.h" // For rendering
+#include "../bella_engine_sdk/src/bella_sdk/bella_engine.h" // For rendering and scene creation in Bella
 #include "../bella_engine_sdk/src/dl_core/dl_main.inl" // Core functionality from the Diffuse Logic engine
-#include "../oom/oom_license.h"         // common misc code
-#include "../oom/oom_file.h"         // common misc code
+#include "../oom/oom_license.h" // common misc code
+#include "../oom/oom_file.h"    // common misc code
+#include "../oom/oom_bella_long.h"    // common misc code
+#include "../oom/oom_bella_engine.h"    // common misc code
 
 //==============================================================================
 // GLOBAL VARIABLES AND FUNCTIONS
@@ -26,24 +29,34 @@ void sigend(int) {
     exit(0);  // Force exit after cleanup
 }
 
+//void render_thread( dl::bella_sdk::Engine& engine,
+//                    MyEngineObserver& engineObserver);
+
 //==============================================================================
 // MAIN FUNCTION
 //==============================================================================
 
 int DL_main(dl::Args& args) {
+
+    int s_oomBellaLogContext = 0; 
+    dl::subscribeLog(&s_oomBellaLogContext, oom::bella::log);
+    dl::flushStartupMessages();
+
     args.add("wd",  "watchdir",   "",   "watch directory for changes");
     args.add("tp",  "thirdparty",   "",   "prints third party licenses");
     args.add("li",  "licenseinfo",   "",   "prints license info");
-    
-    std::string watchPath = ".";
+    args.add("i",  "input",   "",   "prints license info");
 
-    // If --help was requested, print help and exit
+    dl::bella_sdk::Engine engine;
+    engine.scene().loadDefs();
+    oom::bella::MyEngineObserver engineObserver;
+    engine.subscribe(&engineObserver);
+
     if (args.helpRequested()) {
         std::cout << args.help("poomer-efsw © 2025 Harvey Fong","", "1.0") << std::endl;
         return 0;
     }
     
-    // Handle other command-line options
     if (args.have("--licenseinfo")) {
         std::cout << "poomer-efsw © 2025 Harvey Fong" << std::endl;
         std::cout << oom::license::printLicense() << std::endl;
@@ -56,52 +69,59 @@ int DL_main(dl::Args& args) {
         return 0;
     }
 
+    std::string watchPath = ".";
     if (args.have("--watchdir")) {
         watchPath = args.value("--watchdir").buf();
     }
 
-    // Set up signal handler for clean shutdown
+    // Set up signal handler/callback for clean shutdown, global space of C standard library
     signal(SIGINT, sigend);
 
-    // Create the file watcher to catch when .bsz files or zip files are created
-    oom::file::Watcher oomWatcher({"bsz", "zip"}, {"download"});
-    
-    // Start watching the current directory
-    if (oomWatcher.startWatching(watchPath)) {
-        std::cout << "File watcher started" << std::endl;
-    } else {
-        std::cout << "Failed to start file watcher" << std::endl;
+    // Check if watchPath exists before starting the watcher
+    if (!std::filesystem::exists(watchPath)) {
+        dl::logError("Watch path '%s' does not exist", watchPath.c_str());
         return 1;
     }
 
-    // Main processing loop
-    while(!STOP) {
-        // Check for files to process
+    // Global file watcher to catch when .bsz files are created or deleted
+    oom::file::Watcher oomWatcher({"bsz" }, {"download"});
+    
+    // Start watching the directory (which we now know exists)
+    if (oomWatcher.startWatching(watchPath)) {
+        dl::logInfo("File watcher started on '%s'", watchPath.c_str());
+    } else {
+        dl::logError("Failed to start file watcher on '%s'", watchPath.c_str());
+        return 1;
+    }
+
+    while(!STOP) { 
         std::filesystem::path filePath;
         
         // Check if we have files to delete
         while (oomWatcher.getNextFileToDelete(filePath)) {
-            std::cout << "Processing deletion: " << filePath.string() << std::endl;
+            dl::logInfo("Processing deletion: %s", filePath.string());
             // Handle file deletion
             // Add your deletion logic here
         }
         
         // Check if we have files to render
         while (oomWatcher.getNextFileToRender(filePath)) {
-            std::cout << "Processing render: " << filePath.string() << std::endl;
+            dl::logInfo("Processing render: %s", filePath.string().c_str());
+            engine.loadScene(filePath.string().c_str());
+            engine.start();
             // Handle file rendering
-            // Add your rendering logic here
+            //render_thread(engine, engineObserver);
         }
         
         // Sleep to avoid busy waiting
         std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-        std::cout << "Running..." << std::endl;
+        dl::logInfo("Running...");
     }
 
     // Clean shutdown
-    std::cout << "Shutting down file watcher..." << std::endl;
+    dl::logInfo("Shutting down file watcher...");
     oomWatcher.stopWatching();
-    std::cout << "Shutdown complete" << std::endl;
+    dl::logInfo("Shutdown complete");
 
     return 0;
 }
